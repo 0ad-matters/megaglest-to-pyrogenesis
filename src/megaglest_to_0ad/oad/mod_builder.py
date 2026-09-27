@@ -32,6 +32,8 @@ MOD_SUBDIRS = (
     "art/textures/terrain",
     "art/textures/ui/session/portraits/units",
     "art/textures/ui/session/portraits/technologies",
+    "art/textures/ui/pregame/backgrounds",
+    "gui/pregame/backgrounds",
     "art/variants",
     "audio/sfx",
     "audio/music",

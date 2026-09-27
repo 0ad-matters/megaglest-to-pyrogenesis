@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 from lxml import etree
+from PIL import Image
 
 from megaglest_to_0ad.converters.audio_converter import AudioConverter
 from megaglest_to_0ad.converters.mesh_converter import (
@@ -24,6 +25,7 @@ from megaglest_to_0ad.core.media_conversion import (
 )
 from megaglest_to_0ad.megaglest.civ_loader import Faction, UnitDef, load_faction
 from megaglest_to_0ad.megaglest.parser import discover_pack
+from megaglest_to_0ad.oad.menu_background import write_menu_background
 
 G3D_FIXTURES = Path(__file__).parent / "fixtures" / "g3d"
 NS = {"c": "http://www.collada.org/2005/11/COLLADASchema"}
@@ -331,6 +333,54 @@ def test_media_conversion_resilient(layout_b_pack: Path, tmp_path: Path) -> None
     assert stats.textures >= 2  # grunt.bmp + barracks.bmp portraits
     assert any(path.endswith("grunt.png") for path in stats.generated)
     assert any(path.endswith("theme.ogg") for path in stats.generated)
+
+
+def test_menu_background_registers_without_shadowing(
+    layout_b_pack: Path, tmp_path: Path
+) -> None:
+    """The pack's loading screen becomes a main-menu background.
+
+    0 A.D. 28 loads gui/pregame/mainmenu.js as an ES module, so registration
+    has to go through a ~<mod>.append.js file. Nothing stock may be shadowed.
+    """
+    pack = discover_pack(layout_b_pack)
+    faction = load_faction(pack, pack.factions_dir / "demo")
+    mod = tmp_path / "mymod"
+    mod.mkdir()
+    convert_faction_media(faction, mod, Settings(), pack.resources_dir)
+
+    texture = mod / "art/textures/ui/pregame/backgrounds/demo1_1.png"
+    assert texture.is_file()
+    with Image.open(texture) as img:
+        assert img.mode == "RGBA"
+        width, height = img.size
+        assert width & (width - 1) == 0 and height & (height - 1) == 0
+
+    sprite = etree.parse(str(mod / "gui/pregame/backgrounds/demo.xml"))
+    image = sprite.find(".//image")
+    assert image is not None
+    assert image.get("texture") == "pregame/backgrounds/demo1_1.png"
+    assert (mod / "art/textures/ui/pregame/backgrounds/textures.xml").is_file()
+
+    append = mod / "gui/pregame/mainmenu~mymod.append.js"
+    assert append.is_file()
+    assert 'backgrounds["demo"]' in append.read_text(encoding="utf-8")
+
+    # The whole point of .append: stock files stay untouched.
+    assert not (mod / "gui/pregame/backgrounds/background.js").exists()
+    assert not (mod / "gui/pregame/mainmenu.js").exists()
+    assert not (mod / "gui/page_pregame.xml").exists()
+
+
+def test_menu_background_warns_when_absent(tmp_path: Path) -> None:
+    """A pack with no loading screen warns instead of failing the conversion."""
+    faction = Faction(name="demo")
+    warnings: list[str] = []
+    result = write_menu_background(
+        faction, tmp_path / "mod", "demo", TextureConverter(), warnings
+    )
+    assert result is None
+    assert any("no loading screen" in w for w in warnings)
 
 
 def test_mesh_stem_collision_deduped(tmp_path: Path) -> None:

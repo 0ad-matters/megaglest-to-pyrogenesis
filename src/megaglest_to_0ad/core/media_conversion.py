@@ -30,6 +30,7 @@ from ..converters.texture_converter import (
 from ..core.config import Settings
 from ..core.errors import ConversionError
 from ..megaglest.civ_loader import Faction, SkillDef, UnitDef
+from ..oad.menu_background import write_menu_background
 from ..oad.mod_builder import sanitize_mod_name
 from ..oad.particle_converter import convert_particles
 from ..oad.skeleton_writer import write_skeletons
@@ -293,6 +294,7 @@ def convert_faction_media(
     - ``art/textures/ui/session/portraits/units/{civ}/*.png`` (icons)
     - ``audio/sfx/{civ}/*.ogg`` + ``audio/groups/*.xml`` (sounds)
     - ``audio/music/*.ogg`` (faction music)
+    - ``art/textures/ui/pregame/backgrounds/{civ}1_1.png`` (menu background)
     """
     if settings.skip_media:
         return MediaConversionStats()
@@ -484,6 +486,7 @@ def convert_faction_media(
     _convert_sounds(faction, sfx_dir, groups_dir, audio_converter, mod_dir, stats, written)
     _convert_music(faction, music_dir, audio_converter, mod_dir, stats, written)
     convert_particles(faction, mod_dir, settings, stats)
+    write_menu_background(faction, mod_dir, civ, texture_converter, stats.warnings)
 
     for warning in stats.warnings:
         LOGGER.warning("media: %s", warning)
