@@ -16,7 +16,7 @@ from lxml import etree
 
 from ..core.config import Settings
 from ..core.media_conversion import MediaConversionStats, engine_animation_names
-from ..megaglest.civ_loader import Faction, UnitDef
+from ..megaglest.civ_loader import AttackStats, Faction, UnitDef
 from .actor_generator import _unit_models
 from .common import (
     HP_SCALE,
@@ -237,6 +237,11 @@ def _add_resistance(root: etree._Element, unit: UnitDef) -> None:
         node.text = _fmt(armor / HP_SCALE)
 
 
+def _attack_range(astats: AttackStats) -> float:
+    """An attack's ``MaxRange`` in metres."""
+    return max(1.0, astats.range * TILE_METERS)
+
+
 def _add_attack(
     root: etree._Element, unit: UnitDef, stats: MediaConversionStats
 ) -> None:
@@ -257,7 +262,7 @@ def _add_attack(
         dmg_node = etree.SubElement(damage, damage_kind)
         dmg_node.text = _fmt(astats.strength / HP_SCALE)
         rng = etree.SubElement(node, "MaxRange")
-        rng.text = _fmt(max(1.0, astats.range * TILE_METERS))
+        rng.text = _fmt(_attack_range(astats))
         if skill.anim_speed > 0:
             repeat = max(500, round(1000 * 100.0 / skill.anim_speed))
         else:
@@ -342,22 +347,53 @@ def _add_motion(root: etree._Element, unit: UnitDef) -> None:
     )
     if speed <= 0:
         return
-    tag = "UnitMotionFlying" if unit.is_flying else "UnitMotion"
-    motion = etree.SubElement(root, tag)
-    walk = etree.SubElement(motion, "WalkSpeed")
-    walk.text = _fmt(speed / SPEED_SCALE)
     if unit.is_flying:
-        # The 0.28 UnitMotionFlying schema requires MaxSpeed (nonNegativeDecimal).
-        max_speed = etree.SubElement(motion, "MaxSpeed")
-        max_speed.text = _fmt(speed / SPEED_SCALE)
+        _add_flying_motion(root, unit, speed / SPEED_SCALE)
+        return
+    motion = etree.SubElement(root, "UnitMotion")
+    etree.SubElement(motion, "WalkSpeed").text = _fmt(speed / SPEED_SCALE)
     etree.SubElement(motion, "FormationController").text = "false"
     etree.SubElement(motion, "InstantTurnAngle").text = "1.0"
     etree.SubElement(motion, "Acceleration").text = "3.0"
-    passability = "air" if unit.is_flying else "default"
-    etree.SubElement(motion, "PassabilityClass").text = passability
+    etree.SubElement(motion, "PassabilityClass").text = "default"
     etree.SubElement(motion, "Weight").text = "10"
-    if unit.is_flying:
-        etree.SubElement(motion, "FlyingHeight").text = "10"
+
+
+def _add_flying_motion(root: etree._Element, unit: UnitDef, max_speed: float) -> None:
+    """``UnitMotionFlying`` in place of the parent's ground ``UnitMotion``.
+
+    Follows the stock ``units/plane.xml``: the ground motion and obstruction
+    are disabled and formations cleared, since UnitMotionFlying lacks the
+    formation calls UnitAI makes. MegaGlest has no equivalent rates, so all
+    but the speed and height are the stock ``template_bird.xml`` values.
+    """
+    etree.SubElement(root, "UnitMotion", disable="")
+    etree.SubElement(root, "Obstruction", disable="")
+    unit_ai = etree.SubElement(root, "UnitAI")
+    etree.SubElement(unit_ai, "Formations", datatype="tokens", replace="")
+    motion = etree.SubElement(root, "UnitMotionFlying")
+    for tag, value in (
+        ("MaxSpeed", _fmt(max_speed)),
+        ("TakeoffSpeed", "1.0"),
+        ("LandingSpeed", "5.0"),
+        ("AccelRate", "5.0"),
+        ("SlowingRate", "5.0"),
+        ("BrakingRate", "5.0"),
+        ("TurnRate", "0.5"),
+        ("OvershootTime", "2.0"),
+        ("FlyingHeight", "10"),
+        ("ClimbRate", "4.0"),
+        ("DiesInWater", "false"),
+        ("PassabilityClass", "unrestricted"),
+    ):
+        etree.SubElement(motion, tag).text = value
+    ranges = [_attack_range(s.attack) for s in unit.skills.values() if s.attack]
+    if ranges:
+        # Without it a flier never holds position, so it circles a melee
+        # target well outside striking distance.
+        stationary = etree.Element("StationaryDistance")
+        stationary.text = _fmt(max(ranges))
+        motion.find("TakeoffSpeed").addnext(stationary)
 
 
 def _add_vision(root: etree._Element, unit: UnitDef) -> None:
