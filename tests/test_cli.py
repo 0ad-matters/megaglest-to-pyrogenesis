@@ -33,7 +33,10 @@ def test_convert_end_to_end(layout_b_pack: Path, tmp_path: Path) -> None:
     assert result.exit_code == 0, result.output
     mod_dir = tmp_path / "layout_b"
     assert (mod_dir / "mod.json").is_file()
-    report = json.loads((mod_dir / "conversion_report.json").read_text(encoding="utf-8"))
+    report_text = (mod_dir / "conversion_report.json").read_text(encoding="utf-8")
+    # The report ships inside the mod archive, so it must not leak local paths.
+    assert str(layout_b_pack) not in report_text
+    report = json.loads(report_text)
     assert report["pack"]["layout"] == "flat"
     assert report["pack"]["name"] == "layout_b"
     assert report["factions"]["demo"]["units"] == ["barracks", "grunt"]

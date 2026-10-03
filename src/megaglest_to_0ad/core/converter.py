@@ -186,7 +186,6 @@ def _write_report(
         "pack": {
             "name": pack.name,
             "layout": pack.layout.value,
-            "root": str(pack.root),
         },
         "target": {"mod_name": metadata.name, "0ad_version": metadata.dependencies[0]},
         "factions": _faction_summary(pack),
