@@ -345,14 +345,23 @@ def test_template_unit_without_grace_defaults_to_one_population(tmp_path: Path) 
     assert root.find("Population") is None
 
 
-def test_template_flying_unit_has_maxspeed(tmp_path: Path) -> None:
-    """0.28's UnitMotionFlying schema requires MaxSpeed (nonNegativeDecimal)."""
+def test_template_flying_unit_matches_flying_schema(tmp_path: Path) -> None:
+    """Flying units follow the stock plane: 0.28 flying motion, no formations.
+
+    UnitMotionFlying lacks the formation calls UnitAI makes, so a flier left in
+    the inherited formation list throws when a player picks one.
+    """
     gryphon = UnitDef(
         name="gryphon",
         directory=Path("/packs/gryphon"),
         is_flying=True,
         parameters={},
-        skills={"move": SkillDef(type="move", name="m", speed=250)},
+        skills={
+            "move": SkillDef(type="move", name="m", speed=250),
+            "attack": SkillDef(
+                type="attack", name="a", attack=AttackStats(range=1.0, strength=20.0)
+            ),
+        },
         commands=[],
     )
     faction = _faction_with(tmp_path, {"gryphon": gryphon})
@@ -360,8 +369,18 @@ def test_template_flying_unit_has_maxspeed(tmp_path: Path) -> None:
     root = etree.parse(tmp_path / "simulation/templates/units/demo/gryphon.xml").getroot()
     motion = root.find("UnitMotionFlying")
     assert motion is not None
-    assert motion.find("WalkSpeed").text == motion.find("MaxSpeed").text == "8.3"
-    assert motion.find("PassabilityClass").text == "air"
+    assert [child.tag for child in motion] == [
+        "MaxSpeed", "TakeoffSpeed", "StationaryDistance", "LandingSpeed",
+        "AccelRate", "SlowingRate",
+        "BrakingRate", "TurnRate", "OvershootTime", "FlyingHeight", "ClimbRate",
+        "DiesInWater", "PassabilityClass",
+    ]
+    assert motion.find("MaxSpeed").text == "8.3"
+    assert motion.find("StationaryDistance").text == root.find("Attack/Melee/MaxRange").text
+    assert root.find("UnitMotion").get("disable") == ""
+    assert root.find("Obstruction").get("disable") == ""
+    formations = root.find("UnitAI/Formations")
+    assert formations.get("replace") == "" and not formations.text
 
 
 def test_template_building_negative_grace_grants_population_bonus(tmp_path: Path) -> None:
