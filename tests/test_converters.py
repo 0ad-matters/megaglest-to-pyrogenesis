@@ -515,6 +515,37 @@ def test_kmeans_degenerate_cloud_keeps_requested_clusters() -> None:
     assert set(labels.tolist()) == {0}
 
 
+@pytest.mark.parametrize(("bend", "kept"), [(False, 2), (True, 1)])
+def test_collinear_cluster_merged_only_when_motion_leaves_the_line(
+    bend: bool, kept: int
+) -> None:
+    """A short float32 cluster far from the origin is still seen as collinear.
+
+    Rounding to float32 puts its rest points ~1e-6 of their coordinates off the
+    line, which a ratio against the cluster's own 0.01 extent reads as real
+    width. It must be kept while it moves along its line and merged once the
+    motion bends it, since no single rotation can carry that.
+    """
+    import numpy as np
+
+    from megaglest_to_0ad.converters.rig import _merge_degenerate
+
+    body = np.array([[0.0, 0.0, 0.0], [10.0, 0.0, 0.0], [0.0, 10.0, 0.0], [0.0, 0.0, 10.0]])
+    line = np.array([10.0, 0.5, 0.0]) + np.outer(np.linspace(0.0, 0.01, 4), [1.0, 1.0, 1.0])
+    rest = np.vstack([body, line]).astype(np.float32).astype(np.float64)
+    # The rounding must still make the line look wide relative to itself, or
+    # this test no longer covers the trap.
+    s = np.linalg.svd(rest[4:] - rest[4:].mean(axis=0), compute_uv=False)
+    assert s[1] / s[0] > 1e-6
+    moved = rest.copy()
+    moved[4:] += [0.0, 0.0, 0.002]
+    if bend:
+        moved[5, 0] += 0.005
+    labels = np.array([0, 0, 0, 0, 1, 1, 1, 1])
+    centroids = np.array([[1.0], [2.0]])
+    assert len(_merge_degenerate(rest, np.stack([rest, moved]), centroids, labels)) == kept
+
+
 def test_dae_output_is_byte_reproducible(tmp_path: Path) -> None:
     """Converting the same model twice yields identical bytes.
 
