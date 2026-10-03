@@ -23,6 +23,7 @@ import numpy as np
 import pytest
 from collada import Collada
 
+from megaglest_to_0ad.converters import rig
 from megaglest_to_0ad.converters.mesh_converter import MeshConverter, read_g3d
 from megaglest_to_0ad.converters.rig import _frame_stack, build_rig
 
@@ -213,8 +214,8 @@ def test_foreign_accuracy_holds_across_usable_bone_counts(tmp_path: Path, bones:
     """A few bones are enough, because the accuracy comes from the weighting.
 
     Not "any bone count": see ``test_too_few_bones_cannot_carry_the_motion``.
-    64 is the ``--rig-bones`` ceiling, where over-clustering used to isolate
-    collinear clusters no rigid bone can carry.
+    64 is the ``--rig-bones`` ceiling, where over-clustering isolates small
+    clusters, collinear or planar, that no rigid bone can carry.
     """
     base = read_g3d(TREANT)
     anim = _shifted_copy(TREANT)
@@ -231,6 +232,37 @@ def test_foreign_accuracy_holds_across_usable_bone_counts(tmp_path: Path, bones:
         for f in range(1, frames)
     )
     assert worst < _FOREIGN_MAX * diag, f"{bones} bones: {worst / diag:.2e} of diagonal"
+
+
+@pytest.mark.parametrize("seed", [2, 7, 16, 20, 24])
+def test_high_bone_count_survives_other_clusterings(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, seed: int
+) -> None:
+    """64 bones must hold whichever clustering k-means lands on.
+
+    k-means at this count is sensitive to floating-point differences, so CI
+    runners reach clusterings this machine does not. These seeds each isolate
+    a small cluster that a rigid bone cannot carry, collinear or planar, which
+    a collinear-only filter let through in CI.
+    """
+    base = read_g3d(TREANT)
+    anim = _shifted_copy(TREANT)
+    frames = _frame_count(anim)
+    # Patched after the fixture is built: this replaces numpy's default_rng,
+    # not just rig's, and only the k-means seed should vary.
+    real_rng = np.random.default_rng
+    monkeypatch.setattr(rig.np.random, "default_rng", lambda _seed=0: real_rng(seed))
+    dae = tmp_path / f"s{seed}.dae"
+    _write(base, anim, dae, bones=64)
+
+    want = _transferred(base, anim, frames)
+    _, positions = _skinned(dae, 0)
+    diag = _diagonal(positions)
+    worst = max(
+        float(np.linalg.norm(_skinned(dae, f)[0] - want[f], axis=-1).max())
+        for f in range(1, frames)
+    )
+    assert worst < _FOREIGN_MAX * diag, f"seed {seed}: {worst / diag:.2e} of diagonal"
 
 
 def test_default_bone_count_for_this_model_is_accurate(tmp_path: Path) -> None:
