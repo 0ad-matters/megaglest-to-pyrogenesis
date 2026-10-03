@@ -48,3 +48,66 @@ def test_broken_reference_details(broken_pack: Path) -> None:
         assert "factions/ghosts/units/ghost" in message
     else:
         pytest.fail("expected AssetReferenceError")
+
+
+_DISABLED_UNIT = """<?xml version="1.0" standalone="no"?>
+<unit>
+	<parameters>
+		<selection-sounds enabled="{selection}">
+			<sound path="../nowhere/select.wav"/>
+		</selection-sounds>
+		<command-sounds enabled="false">
+			<sound path="../nowhere/ack.wav"/>
+		</command-sounds>
+	</parameters>
+	<skills>
+		<skill>
+			<type value="attack"/>
+			<name value="attack_skill"/>
+			<projectile value="{projectile}">
+				<particle value="true" path="missing_proj.xml"/>
+				<sound enabled="true">
+					<sound-file path="sounds/missing_hit.wav"/>
+				</sound>
+			</projectile>
+			<splash value="{splash}">
+				<radius value="0"/>
+				<damage-all value="true"/>
+				<particle value="true" path="missing_splash.xml"/>
+			</splash>
+		</skill>
+	</skills>
+	<commands/>
+</unit>
+"""
+
+
+def _pack_with_unit(root: Path, **flags: str) -> Path:
+    faction = root / "factions" / "f"
+    (faction / "units" / "u").mkdir(parents=True)
+    (faction / "f.xml").write_text(
+        '<faction><starting-units><unit name="u" amount="1"/></starting-units></faction>'
+    )
+    values = {"selection": "false", "projectile": "false", "splash": "false", **flags}
+    (faction / "units" / "u" / "u.xml").write_text(_DISABLED_UNIT.format(**values))
+    return root
+
+
+@pytest.mark.parametrize(
+    "flags",
+    [{}, {"selection": "true"}, {"projectile": "true"}, {"splash": "true"}],
+    ids=["all-off", "selection-on", "projectile-on", "splash-on"],
+)
+def test_disabled_nodes_are_not_references(tmp_path: Path, flags: dict[str, str]) -> None:
+    """MegaGlest never opens anything under a node switched off, so neither do we.
+
+    megapack ships such dead references (egypt's air_pyramid sounds, persian and
+    roman splash particles); treating them as broken refused the whole pack.
+    """
+    pack = discover_pack(_pack_with_unit(tmp_path, **flags))
+    pack.factions["f"] = load_faction(pack, pack.factions_dir / "f")
+    if not flags:
+        assert build_inventory(pack).unresolved == []
+    else:
+        with pytest.raises(AssetReferenceError):
+            build_inventory(pack)
