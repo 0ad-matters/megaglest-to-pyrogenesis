@@ -417,9 +417,20 @@ def _parse_parameters(
     return params, unmapped
 
 
+def _enabled(node: XmlNode, flag: str = "enabled") -> bool:
+    """Whether MegaGlest loads ``node``'s children (its on/off attribute is set).
+
+    The engine never opens anything under a disabled node, so its references
+    may point at files that do not exist.
+    """
+    return (node.attr(flag) or "true").lower() in _SOUND_ENABLED_TRUE
+
+
 def _sound_paths(node: XmlNode, base: Path, macros: dict[str, Path]) -> list[Path]:
-    """Resolve every ``sound@path`` under a sounds container."""
+    """Resolve every ``sound@path`` under an enabled sounds container."""
     paths: list[Path] = []
+    if not _enabled(node):
+        return paths
     for sound in node.get_all("sound"):
         ref = sound.path_attr()
         if ref:
@@ -469,16 +480,14 @@ def _parse_skill(node: XmlNode, base: Path, macros: dict[str, Path]) -> SkillDef
         elif tag == "projectile":
             attack = skill.attack = skill.attack or AttackStats()
             attack.projectile = child.bool_value(False)
-            _collect_nested_sounds(attack.sounds, child, base, macros)
-            particle = child.get("particle")
-            if particle is not None and particle.path_attr():
-                attack.projectile_particle = resolve_pack_path(base, particle.path_attr(), macros)
+            if attack.projectile:
+                _collect_nested_sounds(attack.sounds, child, base, macros)
+                attack.projectile_particle = _particle_path(child, base, macros)
         elif tag == "splash":
             attack = skill.attack = skill.attack or AttackStats()
-            _collect_nested_sounds(attack.sounds, child, base, macros)
-            particle = child.get("particle")
-            if particle is not None and particle.path_attr():
-                attack.splash_particle = resolve_pack_path(base, particle.path_attr(), macros)
+            if child.bool_value(False):
+                _collect_nested_sounds(attack.sounds, child, base, macros)
+                attack.splash_particle = _particle_path(child, base, macros)
         elif tag.startswith("attack-"):
             attack = skill.attack = skill.attack or AttackStats()
             _parse_attack_field(attack, child)
@@ -488,6 +497,14 @@ def _parse_skill(node: XmlNode, base: Path, macros: dict[str, Path]) -> SkillDef
         else:
             skill.unmapped.append(tag)
     return skill
+
+
+def _particle_path(node: XmlNode, base: Path, macros: dict[str, Path]) -> Path | None:
+    """The ``particle@path`` of a projectile or splash, if that particle is on."""
+    particle = node.get("particle")
+    if particle is None or not particle.bool_value(False) or not particle.path_attr():
+        return None
+    return resolve_pack_path(base, particle.path_attr(), macros)
 
 
 def _collect_nested_sounds(
@@ -508,8 +525,7 @@ def _collect_sound_files(
     macros: dict[str, Path],
 ) -> None:
     """Append a ``<sound>`` element's resolved ``sound-file`` paths."""
-    enabled = (sound.attr("enabled") or "true").lower()
-    if enabled not in _SOUND_ENABLED_TRUE:
+    if not _enabled(sound):
         return
     for sound_file in sound.get_all("sound-file"):
         ref = sound_file.path_attr()
