@@ -98,9 +98,19 @@ MOD=demo_tech
   -mod=public \
   -mod="$MOD" \
   -archivebuild="output/$MOD" \
-  -archivebuild-output="$MOD.pyromod" \
+  -archivebuild-output="output/$MOD.pyromod" \
   -archivebuild-compress
 ```
+
+The archive is `output/<mod>.pyromod`, next to the mod folder. It is a zip with `mod.json` at its root. Check the build log for `ERROR` lines, because the archive builder exits 0 even when a model fails to convert and leaves that model out.
+
+To install it, open the `.pyromod` with 0 A.D. (double-click it, or pass it as the argument: `pyrogenesis output/<mod>.pyromod`). The game copies it to `<mods>/<mod>/<mod>.zip` and lists the mod on the mod selection screen. `<mods>` is:
+
+| OS | Mods directory |
+| --- | --- |
+| Linux | `~/.local/share/0ad/mods` (or `$XDG_DATA_HOME/0ad/mods`) |
+| macOS | `~/Library/Application Support/0ad/mods` |
+| Windows | `Documents\My Games\0ad\mods` |
 
 The unarchived folder loads in 0 A.D. on its own. Build the archive for distribution and load times.
 
