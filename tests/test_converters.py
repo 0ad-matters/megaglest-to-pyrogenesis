@@ -533,6 +533,10 @@ def test_collinear_cluster_merged_only_when_motion_leaves_the_line(
     body = np.array([[0.0, 0.0, 0.0], [10.0, 0.0, 0.0], [0.0, 10.0, 0.0], [0.0, 0.0, 10.0]])
     line = np.array([10.0, 0.5, 0.0]) + np.outer(np.linspace(0.0, 0.01, 4), [1.0, 1.0, 1.0])
     rest = np.vstack([body, line]).astype(np.float32).astype(np.float64)
+    # The rounding must still make the line look wide relative to itself, or
+    # this test no longer covers the trap.
+    s = np.linalg.svd(rest[4:] - rest[4:].mean(axis=0), compute_uv=False)
+    assert s[1] / s[0] > 1e-6
     moved = rest.copy()
     moved[4:] += [0.0, 0.0, 0.002]
     if bend:
