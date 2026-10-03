@@ -208,12 +208,13 @@ def test_foreign_animation_reproduces_the_transferred_motion(tmp_path: Path) -> 
         assert err < _FOREIGN_MAX * diag, f"frame {f}: {err / diag:.2e} of diagonal"
 
 
-@pytest.mark.parametrize("bones", [4, 7, 16])
+@pytest.mark.parametrize("bones", [4, 7, 16, 64])
 def test_foreign_accuracy_holds_across_usable_bone_counts(tmp_path: Path, bones: int) -> None:
     """A few bones are enough, because the accuracy comes from the weighting.
 
-    Not "any bone count": see ``test_too_few_bones_cannot_carry_the_motion``
-    and the degenerate-cluster issue for the ends of the range.
+    Not "any bone count": see ``test_too_few_bones_cannot_carry_the_motion``.
+    64 is the ``--rig-bones`` ceiling, where over-clustering used to isolate
+    collinear clusters no rigid bone can carry.
     """
     base = read_g3d(TREANT)
     anim = _shifted_copy(TREANT)

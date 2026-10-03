@@ -45,6 +45,16 @@ import g3dlib  # noqa: E402  (vendored third-party module; see vendor/g3d/)
 
 _MAX_INFLUENCES = 4
 _KMEANS_ITERATIONS = 60
+# RMS distance of a cluster's rest positions from their best-fit line, as a
+# fraction of the model diagonal, below which the cluster counts as collinear.
+# Float32 vertices carry rounding noise of ~1e-7 of their coordinates, so a
+# ratio against the cluster's own extent misses short clusters far from the
+# origin. Erring loose only sends more clusters to the carry test below.
+_RANK_TOL = 1e-5
+# Worst miss, as a fraction of the model diagonal, at which such a cluster's
+# own rigid fit still counts as carrying its members. Same bound the fidelity
+# tests hold the inline path to.
+_CARRY_TOL = 1e-6
 
 _IDENTITY9 = (
     [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]
@@ -92,7 +102,7 @@ class Rig:
 
     @property
     def part_count(self) -> int:
-        """Bones after the root (one k-means cluster each)."""
+        """Bones after the root (at most one k-means cluster each)."""
         return self.bone_count - 1
 
 
@@ -106,7 +116,9 @@ def build_rig(
 
     ``groups`` partitions ``model.meshes`` (typically by resolved texture;
     the actor references the first group). ``bone_count`` includes the root
-    joint: cluster count = ``bone_count - 1``, shared across groups.
+    joint: cluster count is at most ``bone_count - 1``, shared across groups.
+    Clusters a rigid bone cannot carry are merged away, leaving the spare
+    bones unweighted (identity).
     Models with fewer frames than 2 must not be rigged (callers guard).
     """
     names = [root_name] + [f"bone_{i}" for i in range(1, bone_count)]
@@ -122,7 +134,7 @@ def build_rig(
         rest = stack[0]
         features = _features(rest, stack)
         k = _cluster_count(len(rest), bone_count - 1)
-        centroids, _ = _kmeans(features, k)
+        centroids = _cluster(rest, stack, features, k)
         soft_matrix = _soft_weight_matrix(features, centroids)
         n = len(rest)
         pair_weights = [
@@ -218,7 +230,9 @@ def fit_group_frames(
         # displacement from the source, and puts seam vertices on bones that
         # disagree about which way to move, which reads as flicker.
         features = _features(base_rest, target_stack)
-        centroids, _ = _kmeans(features, _cluster_count(n_base, rig.part_count))
+        centroids = _cluster(
+            base_rest, target_stack, features, _cluster_count(n_base, rig.part_count)
+        )
         soft_matrix = _soft_weight_matrix(features, centroids)
         vertex_weights = [
             _top_influences(soft_matrix[i]) for i in range(soft_matrix.shape[0])
@@ -359,6 +373,45 @@ def _kmeans(features: np.ndarray, k: int) -> tuple[np.ndarray, np.ndarray]:
         )
         centroids_arr = new_centroids
     return centroids_arr, labels
+
+
+def _merge_degenerate(
+    rest: np.ndarray, stack: np.ndarray, centroids: np.ndarray, labels: np.ndarray
+) -> np.ndarray:
+    """Remove clusters that a single rigid bone cannot carry.
+
+    A cluster whose members are collinear (or coincident) at rest leaves its
+    rigid fit free to spin about that line. That is harmless while the members
+    stay on a line, but when ``stack`` moves them off it no rotation fits, and
+    a small cluster gives its vertices weight ~1.0 on that bone, so the miss
+    shows in full. Such a cluster's members fall to their next-nearest
+    surviving centroid; a surviving cluster only gains members, so one pass
+    is enough.
+    """
+    diag = max(float(np.linalg.norm(np.ptp(rest, axis=0))), 1e-18)
+    keep = np.ones(len(centroids), dtype=bool)
+    for j in range(len(centroids)):
+        mask = labels == j
+        members = rest[mask]
+        if not len(members):
+            continue
+        s = np.linalg.svd(members - members.mean(axis=0), compute_uv=False)
+        if len(s) > 1 and s[1] / np.sqrt(len(members)) > _RANK_TOL * diag:
+            continue
+        rot, trans = _kabsch_batch(members, stack[:, mask], np.ones(len(members)))
+        fitted = np.einsum("fij,vj->fvi", rot[0], members) + trans[0][:, None, :]
+        keep[j] = np.linalg.norm(fitted - stack[:, mask], axis=-1).max() <= _CARRY_TOL * diag
+    if not keep.any():
+        keep[np.bincount(labels, minlength=len(centroids)).argmax()] = True
+    return centroids[keep]
+
+
+def _cluster(
+    rest: np.ndarray, stack: np.ndarray, features: np.ndarray, k: int
+) -> np.ndarray:
+    """k-means centroids, minus clusters a rigid bone cannot carry."""
+    centroids, labels = _kmeans(features, k)
+    return _merge_degenerate(rest, stack, centroids, labels)
 
 
 def _soft_weight_matrix(
