@@ -45,16 +45,13 @@ import g3dlib  # noqa: E402  (vendored third-party module; see vendor/g3d/)
 
 _MAX_INFLUENCES = 4
 _KMEANS_ITERATIONS = 60
-# RMS distance of a cluster's rest positions from their best-fit line, as a
-# fraction of the model diagonal, below which the cluster counts as collinear.
-# Float32 vertices carry rounding noise of ~1e-7 of their coordinates, so a
-# ratio against the cluster's own extent misses short clusters far from the
-# origin. Erring loose only sends more clusters to the carry test below.
-_RANK_TOL = 1e-5
-# Worst miss, as a fraction of the model diagonal, at which such a cluster's
-# own rigid fit still counts as carrying its members. Same bound the fidelity
-# tests hold the inline path to.
+# Worst skinned miss, as a fraction of the model diagonal, below which a
+# clustering counts as carrying the motion. Same bound the fidelity tests hold
+# the inline path to.
 _CARRY_TOL = 1e-6
+# Cap on cluster-removal rounds in _prune_uncarried. Across 40 k-means seeds at
+# 64 bones on the treant fixture, the most any seed needed was 3.
+_PRUNE_ROUNDS = 10
 
 _IDENTITY9 = (
     [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]
@@ -242,10 +239,7 @@ def fit_group_frames(
     # b+1 below reads cluster b's weight (one row per bone, matching
     # _kabsch_batch's (M, verts) weight layout). The DAE stores these same
     # pairs, so what the file reconstructs is exactly what was fitted here.
-    weights = np.zeros((rig.part_count, n_base), dtype=np.float64)
-    for i, pairs in enumerate(vertex_weights):
-        for bone, weight in pairs:
-            weights[bone, i] = weight
+    weights = _pair_weights(vertex_weights, rig.part_count)
 
     root_rot, root_t = _kabsch_batch(base_rest, target_stack, np.ones(n_base))
     bone_rot, bone_t = _kabsch_batch(base_rest, target_stack, weights)
@@ -375,43 +369,67 @@ def _kmeans(features: np.ndarray, k: int) -> tuple[np.ndarray, np.ndarray]:
     return centroids_arr, labels
 
 
-def _merge_degenerate(
-    rest: np.ndarray, stack: np.ndarray, centroids: np.ndarray, labels: np.ndarray
-) -> np.ndarray:
-    """Remove clusters that a single rigid bone cannot carry.
-
-    A cluster whose members are collinear (or coincident) at rest leaves its
-    rigid fit free to spin about that line. That is harmless while the members
-    stay on a line, but when ``stack`` moves them off it no rotation fits, and
-    a small cluster gives its vertices weight ~1.0 on that bone, so the miss
-    shows in full. Such a cluster's members fall to their next-nearest
-    surviving centroid; a surviving cluster only gains members, so one pass
-    is enough.
-    """
-    diag = max(float(np.linalg.norm(np.ptp(rest, axis=0))), 1e-18)
-    keep = np.ones(len(centroids), dtype=bool)
-    for j in range(len(centroids)):
-        mask = labels == j
-        members = rest[mask]
-        if not len(members):
-            continue
-        s = np.linalg.svd(members - members.mean(axis=0), compute_uv=False)
-        if len(s) > 1 and s[1] / np.sqrt(len(members)) > _RANK_TOL * diag:
-            continue
-        rot, trans = _kabsch_batch(members, stack[:, mask], np.ones(len(members)))
-        fitted = np.einsum("fij,vj->fvi", rot[0], members) + trans[0][:, None, :]
-        keep[j] = np.linalg.norm(fitted - stack[:, mask], axis=-1).max() <= _CARRY_TOL * diag
-    if not keep.any():
-        keep[np.bincount(labels, minlength=len(centroids)).argmax()] = True
-    return centroids[keep]
-
-
 def _cluster(
     rest: np.ndarray, stack: np.ndarray, features: np.ndarray, k: int
 ) -> np.ndarray:
     """k-means centroids, minus clusters a rigid bone cannot carry."""
-    centroids, labels = _kmeans(features, k)
-    return _merge_degenerate(rest, stack, centroids, labels)
+    centroids, _ = _kmeans(features, k)
+    return _prune_uncarried(rest, stack, features, centroids)
+
+
+def _prune_uncarried(
+    rest: np.ndarray, stack: np.ndarray, features: np.ndarray, centroids: np.ndarray
+) -> np.ndarray:
+    """Remove small clusters whose vertices the blended rig cannot follow.
+
+    Over-clustering isolates a handful of vertices whose motion is not rigid
+    (collinear or planar at rest and pulled out of shape later). The soft
+    weights give them ~1.0 on their own bone, so no neighbour averages the miss
+    away. Which clusters this hits depends on the exact k-means
+    result, so it moves with floating-point differences between machines.
+
+    Each round removes the dominant bone of every vertex that misses, so those
+    vertices blend with their neighbours instead. A removal can hand vertices
+    to another such cluster, so later rounds may first get worse; the best
+    clustering seen wins, and it must not raise the mean miss. The k-means
+    result itself is a candidate, so the result is never worse on ``stack``;
+    other animations that reuse these weights can still come out worse.
+    """
+    tol = _CARRY_TOL * max(float(np.linalg.norm(np.ptp(rest, axis=0))), 1e-18)
+    miss, dominant = _blend_miss(rest, stack, features, centroids)
+    best, best_max, start_mean = centroids, miss.max(), miss.mean()
+    for _ in range(_PRUNE_ROUNDS):
+        bad = miss > tol
+        if not bad.any() or len(centroids) <= 1:
+            break
+        centroids = np.delete(centroids, np.unique(dominant[bad]), axis=0)
+        if not len(centroids):
+            break
+        miss, dominant = _blend_miss(rest, stack, features, centroids)
+        if miss.max() < best_max and miss.mean() <= start_mean:
+            best, best_max = centroids, miss.max()
+    return best
+
+
+def _blend_miss(
+    rest: np.ndarray, stack: np.ndarray, features: np.ndarray, centroids: np.ndarray
+) -> tuple[np.ndarray, np.ndarray]:
+    """Per-vertex worst skinned miss over ``stack``, and each vertex's top bone.
+
+    Built from the same top-4 weights (``_pair_weights``) and the same rigid
+    fit (``_kabsch_batch``) that ``fit_group_frames`` writes to the DAE.
+    """
+    soft = _soft_weight_matrix(features, centroids)
+    pairs = [_top_influences(soft[i]) for i in range(len(rest))]
+    weights = _pair_weights(pairs, len(centroids))
+    rot, trans = _kabsch_batch(rest, stack, weights)
+    skinned = np.zeros_like(stack)
+    for b in range(len(centroids)):
+        if weights[b].any():
+            moved = np.einsum("fij,vj->fvi", rot[b], rest) + trans[b][:, None, :]
+            skinned += weights[b][None, :, None] * moved
+    miss = np.linalg.norm(skinned - stack, axis=-1).max(axis=0)
+    return miss, weights.argmax(axis=0)
 
 
 def _soft_weight_matrix(
@@ -438,6 +456,21 @@ def _top_influences(weights: np.ndarray) -> list[tuple[int, float]]:
     return [(int(b), float(weights[b] / total)) for b in order]
 
 
+def _pair_weights(
+    pair_weights: Sequence[Sequence[tuple[int, float]]], bones: int
+) -> np.ndarray:
+    """Top-4 ``(bone, weight)`` pairs per vertex as a ``(bones, verts)`` matrix.
+
+    One row per bone, the layout ``_kabsch_batch`` takes. The DAE stores these
+    same pairs, so a fit against this matrix is what the file reconstructs.
+    """
+    matrix = np.zeros((bones, len(pair_weights)), dtype=np.float64)
+    for i, pairs in enumerate(pair_weights):
+        for bone, weight in pairs:
+            matrix[bone, i] = weight
+    return matrix
+
+
 def _rest_centroids(
     rest: np.ndarray,
     weights: np.ndarray,
@@ -450,14 +483,9 @@ def _rest_centroids(
     weights, so clusters that never appear in any selected set get a zero
     centroid.
     """
-    k = weights.shape[1]
-    n = weights.shape[0]
-    selected = np.zeros((n, k), dtype=np.float64)
-    for i, pairs in enumerate(pair_weights):
-        for bone, weight in pairs:
-            selected[i, bone] = weight
-    totals = selected.sum(axis=0)  # (k,)
-    centroids = (selected.T @ rest) / np.maximum(totals, 1e-18)[:, None]
+    selected = _pair_weights(pair_weights, weights.shape[1])  # (k, verts)
+    totals = selected.sum(axis=1)  # (k,)
+    centroids = (selected @ rest) / np.maximum(totals, 1e-18)[:, None]
     centroids = np.where((totals > 1e-18)[:, None], centroids, 0.0)
     return centroids.tolist()
 
