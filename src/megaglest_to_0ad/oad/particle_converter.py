@@ -315,7 +315,9 @@ def convert_particles(
 
     converter = TextureConverter()
     particle_xml: dict[Path, MGParticle] = {}
-    for ref in _referenced_particles(faction):
+    # Sorted: set order varies per run, and it decides which same-stem system
+    # gets the bare name in _unique_name.
+    for ref in sorted(_referenced_particles(faction)):
         if ref in particle_xml:
             continue
         try:

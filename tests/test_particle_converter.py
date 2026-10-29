@@ -178,6 +178,16 @@ def test_convert_particles_end_to_end(tmp_path: Path) -> None:
     assert stats.projectile_actor == {}
 
 
+def test_same_stem_particles_are_named_in_path_order(tmp_path: Path) -> None:
+    """The bare name goes to the first path, not to whichever a set yields first."""
+    faction, paths = _splash_faction(tmp_path, {"beta": SPLASH_XML, "alpha": SPLASH_XML})
+    stats = MediaConversionStats()
+    convert_particles(faction, tmp_path / "mod", Settings(), stats)
+
+    assert stats.particle_systems[paths["alpha"]].name == "splash.xml"
+    assert stats.particle_systems[paths["beta"]].name == "splash_1.xml"
+
+
 def test_model_scale_scales_particles(tmp_path: Path) -> None:
     raised = SPLASH_XML.replace('<offset x="0" y="0" z="0"/>', '<offset x="0" y="1.5" z="0"/>')
     faction, paths = _splash_faction(tmp_path, {"grunt": raised})
