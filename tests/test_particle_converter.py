@@ -143,22 +143,27 @@ def test_write_particle_system_format(tmp_path: Path) -> None:
     assert force is not None and float(force.get("y")) == -0.4
 
 
-def test_convert_particles_end_to_end(tmp_path: Path, layout_b_pack: Path) -> None:
-    """A unit-level splash particle is converted + recorded on stats."""
-    splash = _write_particle(tmp_path / "units" / "grunt", "splash.xml", SPLASH_XML)
-    tex = tmp_path / "units" / "grunt" / "images" / "particle_splash.bmp"
-    tex.parent.mkdir(parents=True, exist_ok=True)
-    _make_bmp(tex)
+def _splash_faction(tmp_path: Path, units: dict[str, str]) -> tuple[Faction, dict[str, Path]]:
+    """One unit per entry, each with its own ``splash.xml`` holding the given XML."""
+    paths: dict[str, Path] = {}
+    defs: dict[str, UnitDef] = {}
+    for name, xml in units.items():
+        unit_dir = tmp_path / "units" / name
+        paths[name] = _write_particle(unit_dir, "splash.xml", xml)
+        (unit_dir / "images").mkdir()
+        _make_bmp(unit_dir / "images" / "particle_splash.bmp")
+        attack = AttackStats(projectile=False, splash_particle=paths[name])
+        defs[name] = UnitDef(
+            name=name,
+            directory=unit_dir,
+            skills={"attack": SkillDef(type="attack", name="attack", attack=attack)},
+        )
+    return Faction(name="demo", units=defs), paths
 
-    faction = Faction(name="demo", units={
-            "grunt": UnitDef(name="grunt", directory=tmp_path / "units" / "grunt", skills={
-                    "attack": SkillDef(
-                        type="attack",
-                        name="attack",
-                        attack=AttackStats(projectile=False, splash_particle=splash),
-                    )
-                })
-        })
+
+def test_convert_particles_end_to_end(tmp_path: Path) -> None:
+    """A unit-level splash particle is converted + recorded on stats."""
+    faction, paths = _splash_faction(tmp_path, {"grunt": SPLASH_XML})
     mod = tmp_path / "mod"
     stats = MediaConversionStats()
     convert_particles(faction, mod, Settings(), stats)
@@ -168,6 +173,19 @@ def test_convert_particles_end_to_end(tmp_path: Path, layout_b_pack: Path) -> No
     assert (mod / "art" / "actors" / "particle" / "splash.xml").is_file()
     # particle texture converted to PNG
     assert (mod / "art" / "textures" / "particles" / "particle_splash.png").is_file()
-    assert splash in stats.particle_systems
+    assert paths["grunt"] in stats.particle_systems
     # no projectile actor since splash has no projectile model
     assert stats.projectile_actor == {}
+
+
+def test_model_scale_scales_particles(tmp_path: Path) -> None:
+    raised = SPLASH_XML.replace('<offset x="0" y="0" z="0"/>', '<offset x="0" y="1.5" z="0"/>')
+    faction, paths = _splash_faction(tmp_path, {"grunt": raised})
+    stats = MediaConversionStats()
+    convert_particles(faction, tmp_path / "mod", Settings(model_scale=2.0), stats)
+
+    root = etree.parse(stats.particle_systems[paths["grunt"]]).getroot()
+    assert root.find("constant[@name='position.y']").get("value") == "3"
+    assert root.find("force").get("y") == "-0.8"  # gravity 0.4
+    size = root.find("uniform[@name='size']")
+    assert (size.get("min"), size.get("max")) == ("1.2", "2")  # 0.8 x2, +-25%

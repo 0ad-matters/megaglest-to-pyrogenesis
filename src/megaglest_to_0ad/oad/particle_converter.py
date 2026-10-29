@@ -319,7 +319,14 @@ def convert_particles(
         if ref in particle_xml:
             continue
         try:
-            particle_xml[ref] = parse_particle(ref)
+            particle = parse_particle(ref)
+            # Emitters sit on the model, so they scale with --model-scale.
+            scale = settings.model_scale
+            particle.offset = tuple(v * scale for v in particle.offset)
+            particle.size *= scale
+            particle.speed *= scale
+            particle.gravity *= scale
+            particle_xml[ref] = particle
         except ConversionError as exc:
             stats.warnings.append(f"particle {ref.name}: {exc}")
 
